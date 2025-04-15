@@ -1,0 +1,38 @@
+{
+  "expo": {
+    "name": "CuriosityEngine",
+    "slug": "CuriosityEngine",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#ffffff"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.example.expoprototype",
+      "newArchEnabled": true
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#ffffff"
+      },
+      "package": "com.example.expoprototype",
+      "newArchEnabled": true
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "extra": {
+      "supabaseUrl": "https://dqqsldnguadcbqibnmhi.supabase.co",
+      "supabaseAnonKey": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRxcXNsZG5ndWFkY2JxaWJubWhpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDMxODY3NTIsImV4cCI6MjA1ODc2Mjc1Mn0.n_p_HYcNvf4ipw26cXvlPH5CgoYcMRKUjROnwe7yaXE",
+      "eas": {
+        "projectId": "YOUR_EAS_PROJECT_ID"
+      }
+    }
+  }
+}
