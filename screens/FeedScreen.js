@@ -98,7 +98,7 @@ export default function FeedScreen({ navigation }) {
             const loadedVideoIds = videos.map(v => v.id);
             console.log('fetchVideos: Fetching from Supabase, excluding IDs:', loadedVideoIds);
 
-            const { data, error: fetchError } = await supabase
+            let query = supabase
                 .from('videos')
                 .select(`
                     *,
@@ -106,10 +106,15 @@ export default function FeedScreen({ navigation }) {
                 `)
                 .eq('upload_status', 'done')
                 .eq('transcribe_status', 'done')
-                .eq('tag_status', 'done')
-                .${loadedVideoIds.length > 0 ? `.not('id', 'in', '(' + loadedVideoIds.map(id => `'${id}'`).join(',') + ')')\` : ''}
-                .order('virality_score', { ascending: false })
-                .limit(BATCH_SIZE);
+                .eq('tag_status', 'done');
+
+            if (!initialLoad && loadedVideoIds.length > 0) {
+                query = query.not('id', 'in', `(${loadedVideoIds.join(',')})`);
+            }
+
+            query = query.order('virality_score', { ascending: false }).limit(BATCH_SIZE);
+
+            const { data, error: fetchError } = await query;
 
             if (fetchError) {
                 console.error('fetchVideos: Supabase fetch error:', fetchError);
