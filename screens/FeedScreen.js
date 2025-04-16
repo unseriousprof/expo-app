@@ -99,6 +99,9 @@ export default function FeedScreen({ navigation }) {
     const colorScheme = useColorScheme();
     const theme = Colors[colorScheme || 'light'];
 
+    // Track current index for preloading
+    const currentIndexRef = useRef(0);
+
     const fetchVideos = async (initialLoad = false) => {
         if (!initialLoad && (loadingMore || allLoaded)) {
             return;
@@ -123,59 +126,52 @@ export default function FeedScreen({ navigation }) {
             }
             console.log('USER_CATEGORIES:', userCategories);
 
-            // Step 1: Fetch videos (no join)
+            // --- Refactored Query: Fetch videos with transcripts, filter by onboarding_categories in SQL ---
             const offset = videos.length;
             console.log('Requesting videos with offset:', offset, 'range:', offset, '-', offset + BATCH_SIZE - 1);
+
+            // Use a join to fetch videos and their transcripts in one query
             let { data: videoBatch, error: videoError } = await supabase
                 .from('videos')
-                .select('*')
+                .select(`*, transcripts:transcripts(video_id, onboarding_categories, description, categories, topics, difficulty_level, predictive_engagement, content_flags)`) // Only select needed fields
                 .eq('upload_status', 'done')
                 .eq('transcribe_status', 'done')
                 .eq('tag_status', 'done')
                 .order('virality_score', { ascending: false })
-                .range(offset, offset + BATCH_SIZE - 1);
+                .range(offset, offset + BATCH_SIZE * 2 - 1); // Overfetch to allow for filtering
+
             if (videoError) throw videoError;
             if (!videoBatch || videoBatch.length === 0) {
                 setAllLoaded(true);
                 return;
             }
-            console.log('Returned video IDs:', videoBatch.map(v => v.id));
 
-            // Step 2: Fetch transcripts for those video IDs
-            const videoIds = videoBatch.map(v => v.id);
-            let { data: transcriptBatch, error: transcriptError } = await supabase
-                .from('transcripts')
-                .select('*')
-                .in('video_id', videoIds);
-            if (transcriptError) throw transcriptError;
-            console.log('Fetched transcripts:', transcriptBatch.length);
-
-            // Step 3: Merge transcripts into videos
-            const transcriptMap = {};
-            for (const t of transcriptBatch) {
-                if (!transcriptMap[t.video_id]) transcriptMap[t.video_id] = [];
-                transcriptMap[t.video_id].push(t);
-            }
-            // Filter: Only include videos where at least one onboarding_category matches user selection
+            // Filter videos where at least one transcript has a matching onboarding_category
             const filteredBatch = videoBatch.filter(v => {
-                const transcripts = transcriptMap[v.id] || [];
-                // Check all transcripts for onboarding_categories
-                for (const t of transcripts) {
-                    if (Array.isArray(t.onboarding_categories)) {
-                        for (const cat of t.onboarding_categories) {
-                            if (userCategories.includes(cat.category)) {
-                                return true;
-                            }
-                        }
+                if (!Array.isArray(v.transcripts)) return false;
+                return v.transcripts.some(t =>
+                    Array.isArray(t.onboarding_categories) &&
+                    t.onboarding_categories.some(cat => userCategories.includes(cat.category))
+                );
+            });
+
+            // Only take up to BATCH_SIZE videos
+            const newVideos = filteredBatch.slice(0, BATCH_SIZE);
+
+            // Deduplicate videos by ID (in case of overlap or re-fetch)
+            setVideos(prev => {
+                const seen = new Set(prev.map(v => v.id));
+                const deduped = [...prev];
+                for (const v of newVideos) {
+                    if (!seen.has(v.id)) {
+                        deduped.push(v);
+                        seen.add(v.id);
                     }
                 }
-                return false;
+                return initialLoad ? newVideos : deduped;
             });
-            const mergedBatch = filteredBatch.map(v => ({ ...v, transcripts: transcriptMap[v.id] || [] }));
 
-            // Accumulate videos for infinite scroll
-            setVideos(prev => initialLoad ? mergedBatch : [...prev, ...mergedBatch]);
-            if (videoBatch.length < BATCH_SIZE) {
+            if (newVideos.length < BATCH_SIZE) {
                 setAllLoaded(true);
             }
         } catch (err) {
@@ -197,11 +193,22 @@ export default function FeedScreen({ navigation }) {
     const onViewableItemsChanged = useCallback(({ viewableItems }) => {
         if (viewableItems.length > 0) {
             setViewableItemId(viewableItems[0].item.id);
+            // Find the index of the first viewable item
+            const idx = videos.findIndex(v => v.id === viewableItems[0].item.id);
+            currentIndexRef.current = idx;
+            // Preload next batch if within 3 of the end
+            if (
+                videos.length - idx <= 3 &&
+                !loadingMore &&
+                !allLoaded
+            ) {
+                fetchVideos(false);
+            }
         } else {
             // Optionally set to null if no items are viewable, though usually one is
             // setViewableItemId(null);
         }
-    }, []);
+    }, [videos, loadingMore, allLoaded]);
 
     const handleShowMetadata = (video) => {
         setMetadataVideo(video);
@@ -337,14 +344,6 @@ export default function FeedScreen({ navigation }) {
                 initialNumToRender={5} // Increased
                 windowSize={10} // Increased
                 maxToRenderPerBatch={5} // Increased
-                onEndReached={() => {
-                    if (!onEndReachedCalledDuringMomentum.current && !loadingMore) {
-                        fetchVideos(false);
-                        onEndReachedCalledDuringMomentum.current = true; 
-                    }
-                }}
-                onEndReachedThreshold={0.8}
-                onMomentumScrollBegin={() => { onEndReachedCalledDuringMomentum.current = false; }} 
                 ListFooterComponent={loadingMore ? <ActivityIndicator style={{ marginVertical: 20 }} size="large" color={theme.accent4} /> : null}
             />
             {/* Metadata Modal */}
@@ -368,31 +367,108 @@ export default function FeedScreen({ navigation }) {
                     >
                         <ScrollView contentContainerStyle={styles.modalScrollContent}>
                             <Text style={[styles.modalTitle, { color: theme.icon }]}>Video Metadata</Text>
-                            {metadataVideo && (
-                                <>
+                            {metadataVideo && (() => {
+                                const transcript = metadataVideo.transcripts?.[0] || {};
+                                // Helper to render array of objects or strings
+                                const renderArray = (arr, keyFields = ['tag', 'topic', 'flag', 'category']) => {
+                                    if (!Array.isArray(arr) || arr.length === 0) return <Text style={styles.modalValue}>N/A</Text>;
+                                    return arr.map((item, i) => {
+                                        if (typeof item === 'string') {
+                                            return <Text key={i} style={styles.modalValue}>{item}{i < arr.length - 1 ? ', ' : ''}</Text>;
+                                        } else if (typeof item === 'object' && item !== null) {
+                                            // Try to find a key field
+                                            let label = '';
+                                            for (const k of keyFields) {
+                                                if (item[k]) {
+                                                    label = item[k];
+                                                    break;
+                                                }
+                                            }
+                                            // Add confidence if present
+                                            if (item.confidence !== undefined) {
+                                                label += ` (${(item.confidence * 100).toFixed(0)}%)`;
+                                            }
+                                            // Fallback to JSON if nothing else
+                                            if (!label) label = JSON.stringify(item);
+                                            return <Text key={i} style={styles.modalValue}>{label}{i < arr.length - 1 ? ', ' : ''}</Text>;
+                                        }
+                                        return null;
+                                    });
+                                };
+                                return <>
                                     <Text style={[styles.modalSectionTitle, { color: theme.accent2 }]}>General</Text>
-                                    <Text style={styles.modalLabel}>TikTok ID: <Text style={styles.modalValue}>{metadataVideo.tiktok_id}</Text></Text>
-                                    <Text style={styles.modalLabel}>Upload Date: <Text style={styles.modalValue}>{metadataVideo.upload_date}</Text></Text>
-                                    <Text style={styles.modalLabel}>Views: <Text style={styles.modalValue}>{metadataVideo.views}</Text></Text>
-                                    <Text style={styles.modalLabel}>Likes: <Text style={styles.modalValue}>{metadataVideo.likes}</Text></Text>
-                                    <Text style={styles.modalLabel}>Comments: <Text style={styles.modalValue}>{metadataVideo.comments}</Text></Text>
-                                    <Text style={styles.modalLabel}>Duration: <Text style={styles.modalValue}>{metadataVideo.duration}s</Text></Text>
-                                    <Text style={styles.modalLabel}>Resolution: <Text style={styles.modalValue}>{metadataVideo.resolution}</Text></Text>
-                                    <Text style={styles.modalLabel}>Language: <Text style={styles.modalValue}>{metadataVideo.language}</Text></Text>
-                                    <Text style={styles.modalLabel}>Description: <Text style={styles.modalValue}>{metadataVideo.transcripts?.[0]?.description || ''}</Text></Text>
-                                    <Text style={[styles.modalSectionTitle, { color: theme.accent4 }]}>Tagging Output</Text>
-                                    <Text style={styles.modalLabel}>Categories: {Array.isArray(metadataVideo.transcripts?.[0]?.categories) ? metadataVideo.transcripts[0].categories.map((c, i) => <Text key={i} style={styles.modalValue}>{c.tag}{i < metadataVideo.transcripts[0].categories.length - 1 ? ', ' : ''}</Text>) : <Text style={styles.modalValue}>N/A</Text>}</Text>
-                                    <Text style={styles.modalLabel}>Topics: {Array.isArray(metadataVideo.transcripts?.[0]?.topics) ? metadataVideo.transcripts[0].topics.map((t, i) => <Text key={i} style={styles.modalValue}>{t.topic}{i < metadataVideo.transcripts[0].topics.length - 1 ? ', ' : ''}</Text>) : <Text style={styles.modalValue}>N/A</Text>}</Text>
-                                    <Text style={styles.modalLabel}>Difficulty Level: <Text style={styles.modalValue}>{metadataVideo.transcripts?.[0]?.difficulty_level?.level || ''}</Text></Text>
-                                    <Text style={styles.modalLabel}>Predictive Engagement:</Text>
-                                    <View style={styles.modalSubSection}>
-                                        <Text style={styles.modalLabel}>Educational Value: <Text style={styles.modalValue}>{metadataVideo.transcripts?.[0]?.predictive_engagement?.educational_value ?? ''}</Text></Text>
-                                        <Text style={styles.modalLabel}>Attention Grabbing: <Text style={styles.modalValue}>{metadataVideo.transcripts?.[0]?.predictive_engagement?.attention_grabbing ?? ''}</Text></Text>
-                                        <Text style={styles.modalLabel}>Entertainment Value: <Text style={styles.modalValue}>{metadataVideo.transcripts?.[0]?.predictive_engagement?.entertainment_value ?? ''}</Text></Text>
+                                    <View style={{ marginBottom: 8 }}>
+                                        <Text style={styles.modalLabel}>TikTok ID:</Text>
+                                        <Text style={styles.modalValue}>{metadataVideo.tiktok_id || 'N/A'}</Text>
                                     </View>
-                                    <Text style={styles.modalLabel}>Content Flags: {Array.isArray(metadataVideo.transcripts?.[0]?.content_flags) ? metadataVideo.transcripts[0].content_flags.map((c, i) => <Text key={i} style={styles.modalValue}>{c}{i < metadataVideo.transcripts[0].content_flags.length - 1 ? ', ' : ''}</Text>) : <Text style={styles.modalValue}>N/A</Text>}</Text>
-                                </>
-                            )}
+                                    <View style={{ marginBottom: 8 }}>
+                                        <Text style={styles.modalLabel}>Upload Date:</Text>
+                                        <Text style={styles.modalValue}>{metadataVideo.upload_date || 'N/A'}</Text>
+                                    </View>
+                                    <View style={{ marginBottom: 8 }}>
+                                        <Text style={styles.modalLabel}>Views:</Text>
+                                        <Text style={styles.modalValue}>{metadataVideo.views ?? 'N/A'}</Text>
+                                    </View>
+                                    <View style={{ marginBottom: 8 }}>
+                                        <Text style={styles.modalLabel}>Likes:</Text>
+                                        <Text style={styles.modalValue}>{metadataVideo.likes ?? 'N/A'}</Text>
+                                    </View>
+                                    <View style={{ marginBottom: 8 }}>
+                                        <Text style={styles.modalLabel}>Comments:</Text>
+                                        <Text style={styles.modalValue}>{metadataVideo.comments ?? 'N/A'}</Text>
+                                    </View>
+                                    <View style={{ marginBottom: 8 }}>
+                                        <Text style={styles.modalLabel}>Duration:</Text>
+                                        <Text style={styles.modalValue}>{metadataVideo.duration ? `${metadataVideo.duration}s` : 'N/A'}</Text>
+                                    </View>
+                                    <View style={{ marginBottom: 8 }}>
+                                        <Text style={styles.modalLabel}>Resolution:</Text>
+                                        <Text style={styles.modalValue}>{metadataVideo.resolution || 'N/A'}</Text>
+                                    </View>
+                                    <View style={{ marginBottom: 8 }}>
+                                        <Text style={styles.modalLabel}>Language:</Text>
+                                        <Text style={styles.modalValue}>{metadataVideo.language || 'N/A'}</Text>
+                                    </View>
+                                    <View style={{ marginBottom: 8 }}>
+                                        <Text style={styles.modalLabel}>Description:</Text>
+                                        <Text style={styles.modalValue}>{transcript.description || ''}</Text>
+                                    </View>
+                                    <Text style={[styles.modalSectionTitle, { color: theme.accent4 }]}>Tagging Output</Text>
+                                    <View style={{ marginBottom: 8 }}>
+                                        <Text style={styles.modalLabel}>Categories:</Text>
+                                        {renderArray(transcript.categories, ['tag'])}
+                                    </View>
+                                    <View style={{ marginBottom: 8 }}>
+                                        <Text style={styles.modalLabel}>Topics:</Text>
+                                        {renderArray(transcript.topics, ['topic'])}
+                                    </View>
+                                    <View style={{ marginBottom: 8 }}>
+                                        <Text style={styles.modalLabel}>Difficulty Level:</Text>
+                                        <Text style={styles.modalValue}>{transcript.difficulty_level?.level || 'N/A'}</Text>
+                                    </View>
+                                    <View style={{ marginBottom: 8 }}>
+                                        <Text style={styles.modalLabel}>Predictive Engagement:</Text>
+                                    </View>
+                                    <View style={styles.modalSubSection}>
+                                        <View style={{ marginBottom: 4 }}>
+                                            <Text style={styles.modalLabel}>Educational Value:</Text>
+                                            <Text style={styles.modalValue}>{transcript.predictive_engagement?.educational_value ?? 'N/A'}</Text>
+                                        </View>
+                                        <View style={{ marginBottom: 4 }}>
+                                            <Text style={styles.modalLabel}>Attention Grabbing:</Text>
+                                            <Text style={styles.modalValue}>{transcript.predictive_engagement?.attention_grabbing ?? 'N/A'}</Text>
+                                        </View>
+                                        <View style={{ marginBottom: 4 }}>
+                                            <Text style={styles.modalLabel}>Entertainment Value:</Text>
+                                            <Text style={styles.modalValue}>{transcript.predictive_engagement?.entertainment_value ?? 'N/A'}</Text>
+                                        </View>
+                                    </View>
+                                    <View style={{ marginBottom: 8 }}>
+                                        <Text style={styles.modalLabel}>Content Flags:</Text>
+                                        {renderArray(transcript.content_flags, ['flag'])}
+                                    </View>
+                                </>;
+                            })()}
                             <TouchableOpacity style={[styles.modalCloseButton, { backgroundColor: theme.accent3 }]} onPress={handleCloseMetadata}>
                                 <Ionicons name="close-circle" size={32} color={theme.accent4} />
                                 <Text style={[styles.modalCloseButtonText, { color: theme.icon }]}>Close</Text>
