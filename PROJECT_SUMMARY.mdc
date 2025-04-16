@@ -1,0 +1,169 @@
+---
+description: 
+globs: 
+alwaysApply: false
+---
+# Project Summary & Refactor Plan (2024)
+
+## Tech Stack
+- **Frontend**: React Native (Expo)
+- **Navigation**: React Navigation (tab-based, see `app/(tabs)`)
+- **Video Playback**: expo-video
+- **Backend/DB**: Supabase (Postgres)
+- **State/Storage**: React state, AsyncStorage
+- **Testing**: Jest (see `__tests__`)
+- **Other**: Custom hooks, modular components, color constants
+
+## SolarPunk Techforward Theme
+A unique, immersive visual identity blending:
+- **Nature**: Mint greens, sky blues, warm yellows, soft oranges, floral pinks, organic gradients, playful shapes, and natural light.
+- **Futuristic Technology**: Neon glows, steel/chrome accents, glassy overlays, digital highlights, and high-tech UI elements (e.g., glowing borders, animated transitions, subtle holographic effects).
+- **Philosophy**: The app should feel like a hopeful, tech-empowered future where nature and technology are harmoniously interwoven. The user enters a world that is both lush and advanced, with a sense of optimism and delight.
+- **Implementation**: Use the expanded color palette, gradients, and glows throughout the UI. Mix organic curves with geometric, tech-inspired details. Accent with digital/neon highlights and glassy surfaces for overlays and modals.
+
+(See `constants/Colors.ts` for palette and use this section as a reference for all future design and theming decisions.)
+
+## Key Issues (as of April 2024)
+- **Feed Fetching Bugs**: Some onboarding categories return no videos, despite complete DB coverage.
+- **Infinite Scroll Broken**: Feed only allows 1–2 scrolls before ending; not truly infinite.
+- **UI/UX**: Feed is functional but lacks polish, modernity, and a distinct visual identity (goal: SolarPunk/TikTok-inspired).
+- **Metadata Modal**: Needs to be more organized and visually appealing.
+- **Performance**: Potential for jank, slow loads, or excessive re-renders.
+- **Error Handling**: Needs to be robust for all network and data edge cases.
+
+## Refactor & Improvement Plan
+1. **Map the Codebase**: Identify all relevant files and logic for feed, onboarding, and navigation.
+2. **Summarize Tech Stack & Plan**: (This doc)
+3. **Review Feed Implementation**: Document current data flow, UI, and state management. Identify root causes for fetching/scroll issues.
+4. **Design Improved Feed**: Plan new UI/UX (SolarPunk/TikTok-inspired), component structure, and data flow.
+5. **Refactor & Implement**: 
+    - Fix feed fetching and infinite scroll logic
+        - **Remove confidence threshold from category filtering (confidence is for debugging only)**
+        - **Improve fetching logic to avoid over-filtering and ensure infinite scroll always works unless DB is truly exhausted**
+    - Refactor feed screen for performance and polish
+    - Upgrade video player and controls
+    - Redesign metadata overlay/modal
+    - Add SolarPunk-inspired UI elements
+    - Optimize API calls and error handling
+    - Ensure accessibility and responsiveness
+6. **Backend/API Review**: Refactor recommendation logic as needed, ensure robust logging and error handling.
+7. **Testing**: Expand/add tests for all major features; manual QA on iOS/Android.
+8. **Final Review & Polish**: Code cleanup, comments, documentation, and final testing.
+
+---
+
+**This doc is a living reference for the current state, issues, and improvement plan for the video feed app.** 
+
+:) 
+
+## Codebase Structure (Spring 2024)
+- **screens/**
+  - `FeedScreen.js`: Main video feed, infinite scroll, video player, metadata modal, SolarPunk theming.
+  - `OnboardingScreen.js`: Category selection, onboarding flow.
+- **app/(tabs)/**
+  - `_layout.tsx`: Tab navigation (Home, Explore, Admin, Patterns).
+  - `index.tsx`, `explore.tsx`: Demo/starter screens (to be replaced or repurposed).
+  - (Admin and Patterns screens to be implemented)
+- **components/**
+  - UI primitives (ThemedText, ThemedView, ParallaxScrollView, etc.), icons, tab bar backgrounds.
+- **constants/Colors.ts**: SolarPunk/techforward color palette.
+- **supabase.js**: Supabase client and onboarding category fetch.
+- **testSupabaseFetching.js**: Node script to test Supabase data fetching.
+
+## Supabase Schema Highlights
+- **videos**: Core video metadata (tiktok_id, creator, url, stats, style, etc.).
+- **transcripts**: Linked to videos, contains transcript, categories, topics, difficulty, predictive engagement, content flags, etc.
+- **mini_games**: Linked to videos, for interactive content.
+- **user_engagement**: Tracks user interactions (watch, like, skip, share).
+- **user_progress**: Tracks XP and category progress per user.
+- **users**: User info and onboarding categories.
+- **search_logs**: User search queries.
+
+## Current State
+- **Feed**: Infinite scroll, robust fetching, SolarPunk theming, metadata modal, error/empty/loading states.
+- **Onboarding**: Category selection, stores to AsyncStorage.
+- **Navigation**: Home, Explore, Admin, Patterns tabs (Admin/Patterns not yet implemented).
+- **Theming**: SolarPunk Techforward theme applied to feed and modal; palette ready for global use.
+
+## Gaps & Opportunities
+- **Admin Tab**: Not yet implemented. Needs backend endpoints for dynamic recommendation weights (style, category mix, skip penalty, etc.).
+- **Patterns Tab**: Not yet implemented. Needs backend endpoints or analytics logic to surface content patterns (top styles, creators, skipped categories, etc.).
+- **No backend endpoints** for adjusting weights or fetching pattern analytics.
+- **No advanced analytics** (e.g., engagement trends, skip patterns, virality insights).
+- **No caching or offline support** for videos or metadata.
+- **No push notifications or real-time updates.**
+
+## Concrete Frontend Ideas
+- Apply SolarPunk/techforward theme to all screens (onboarding, admin, patterns, navigation, etc.).
+- Implement Admin tab: sliders/toggles for weights, live preview, save/apply to backend.
+- Implement Patterns tab: beautiful summary cards, charts, and playful insights.
+- Add onboarding polish: animated transitions, playful icons, progress bar.
+- Add error boundaries, retry/pull-to-refresh, and accessibility improvements.
+- Add playful, animated transitions and microinteractions (e.g., button glows, modal pop).
+- Add support for dark mode and accessibility (font scaling, color contrast).
+
+## Concrete Backend Ideas
+- Create API endpoints for:
+  - Adjusting and persisting recommendation weights (per user or globally).
+  - Fetching pattern analytics (top styles, creators, skip rates, engagement trends).
+  - Logging admin changes and user feedback.
+- Refactor recommendation logic for modularity and testability.
+- Add analytics pipeline for engagement, virality, and skip patterns.
+- Add caching (e.g., Redis) for popular videos and analytics.
+- Add robust error handling and logging for all endpoints.
+- Plan for scalability: rate limiting, pagination, and efficient queries.
+
+## Other Notes for Future Devs
+- See this doc and `constants/Colors.ts` for all theming and design decisions.
+- The codebase is modular and ready for expansion; follow the SolarPunk Techforward theme for all new features.
+- Prioritize delightful, optimistic, and accessible user experiences.
+- When in doubt, blend nature and technology—lush gradients, glowing accents, and high-tech UI.
+
+## Pagination & Join Bug: Decision Rationale
+- **Issue:** Supabase offset-based pagination does not work when using a join (e.g., fetching videos with transcripts in one query). Only the first N rows are returned repeatedly, breaking infinite scroll.
+- **Options Considered:**
+  - **Client-side (JS) two-step fetch:** Fetch videos (no join, with offset/limit), then fetch transcripts for those video IDs, and merge in JS.
+  - **RPC/Stored Procedure:** Write a Postgres function to do the join and pagination server-side, returning the joined data in one request.
+- **Tradeoff Analysis:**
+  - **Client-side Pros:** Maximum flexibility, rapid iteration, easy to update/tweak recommendation logic and admin weights, no backend changes needed.
+  - **Client-side Cons:** More network requests, more client logic, but not a performance issue for batches of 15–50.
+  - **RPC Pros:** Single request, atomic, more efficient for large-scale production.
+  - **RPC Cons:** More complex to set up, harder to debug, slower to iterate on algorithm changes.
+- **Decision:** Proceed with the client-side (JS) approach for now, as it best supports rapid experimentation, admin-controlled weights, and flexible recommendation logic. Revisit RPC if/when scaling or backend consistency becomes a priority.
+
+## Issues with Client-Side (JS) Feed Filtering & Pagination
+
+### Problems Encountered
+- **Duplicate Keys & Glitchy UI:**
+  - Merging and filtering videos in JS can result in duplicate video IDs in the feed, causing React/FlatList to throw duplicate key warnings.
+  - This leads to video/audio overlap, glitchy playback, and unpredictable UI bugs.
+- **Filter-After-Paginate Pitfall:**
+  - Fetching a batch, then filtering by category in JS, means you can easily skip over matching videos or never reach them, especially for rare categories.
+  - Infinite scroll breaks: you only ever see the same N videos, and can't reliably page through the full set.
+- **Complexity & Inefficiency:**
+  - Two-step fetch (videos, then transcripts) adds network overhead and client-side merging logic.
+  - Deduplication, merging, and error handling become increasingly complex and fragile as the app grows.
+- **Hard to Extend for Recommendations:**
+  - As we add admin-controlled weights, skip penalties, and more complex recommendation logic, doing it all in JS will become unmanageable and slow.
+  - Real-time updates, analytics, and A/B testing are much harder to implement client-side.
+
+### Why We Need a Supabase-Side Solution
+- **Filter & Paginate in SQL:**
+  - By moving filtering and pagination to a Supabase view or RPC (Postgres function), we can:
+    - Filter by onboarding categories, style, creator, etc. before paginating.
+    - Always return unique, correctly-ordered batches for infinite scroll.
+    - Avoid duplicate keys and UI bugs.
+- **Future-Proof for Recommendations:**
+  - All recommendation logic (weights, penalties, admin controls) can be handled in SQL, making the app simpler and more robust.
+  - Easier to log, analyze, and iterate on algorithm changes.
+- **Cleaner, Faster, More Reliable:**
+  - One network request per batch, no client-side merging/deduplication.
+  - Easier to maintain, debug, and scale.
+
+### Recommendation
+- **Move to a Supabase view or RPC for feed fetching:**
+  - Implement all filtering, sorting, and pagination in SQL.
+  - Pass admin weights and user preferences as parameters to the RPC.
+  - The app simply calls the endpoint and renders the results—no more merging, deduplication, or filter-after-paginate bugs.
+
+--- 

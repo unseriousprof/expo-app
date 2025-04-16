@@ -1,0 +1,107 @@
+---
+description: 
+globs: 
+alwaysApply: true
+---
+# Video Recommendation & Tagging Prototype (Internal Testing)
+
+**Version**: 3.0
+
+**Date**: April 15, 2025
+
+## 1. Overview
+
+### 1.1 Purpose
+
+This internal prototype enables the team to explore a library of 22,000 videos from 69 creators, iterate on a recommendation algorithm, and refine the tagging system. It provides a TikTok/Instagram Reels/YouTube Shorts-like feed to scroll through videos, analyze metadata, test algorithm variables, and identify content patterns.
+
+### 1.2 Goals
+
+- **Iterate on Recommendation Algorithm**: Test variables (style, creator mix, category mixing, skip penalties) to optimize engagement.
+- **Refine Tagging System**: Compare tagging output with video content to improve accuracy.
+- **Explore Content Patterns**: Analyze trends (e.g., popular styles, creators, categories) to inform algorithm design.
+- **Mimic Social Media Feeds**: Deliver a dynamic, mixed-content feed that balances user preferences and variety.
+
+---
+
+## 2. Key Features & Requirements
+
+### 2.1 Video Feed Interface
+
+- **Description**: A scrollable, vertical, full-screen video feed for internal testing.
+- **Requirements**:
+    - Infinite scroll with seamless loading (fetch ~10 videos at a time).
+    - Autoplay with sound.
+    - Playback controls: tap to pause/play, seek bar, tap & hold to go 2x speed.
+    - Display creator username and video description on the video similar to TikTok’s layout - white text over dark transparent gradient.
+
+### 2.2 Metadata Viewer
+
+- **Description**: A button to view metadata and tagging output for the current video.
+- **Requirements**:
+    - "View Metadata" button on the feed screen.
+    - Modal displays:
+        - **Video Metadata**: `tiktok_id`, `upload_date`, `views`, `likes`, `comments`, `duration`, `resolution`.
+        - **Tagging Output**: `categories`, `topics`, `difficulty_level`, `predictive_engagement` (`educational_value`, `attention_grabbing`, `entertainment_value`), `content_flags`.
+        - Clean, organized layout in two sections.
+
+### 2.3 Recommendation Algorithm Experimentation
+
+- **Description**: A configurable algorithm to mix videos based on weighted variables, with dynamic adjustments for internal testing.
+- **Variables to Iterate On**:
+    - **Video Style**:
+        - Add `style` field to `videos` table: `animated_voiceover` (e.g., MinuteEarth), `explainer_person` (creator on screen with visuals, e.g., DrJulie), `talking_head` (creator speaking to camera, e.g., Johnny.Harris), `silent_graph_music` (silent with music and visuals, e.g., Reason4Math), `other`.
+        - Initial tagging: Heuristic-based (e.g., `creator_username`, `topics`).
+        - Weight: Test style mix (e.g., 40% `animated_voiceover`, 30% `explainer_person`, 20% `talking_head`, 10% `silent_graph_music`).
+    - **Creator Mix and Skip Penalty**:
+        - Mix creators to avoid over-indexing on a few (e.g., 50% from top 5 creators by watch time, 50% from others).
+        - Penalize creators based on skips: If a user skips >50% of a creator’s videos, reduce their weight (e.g., by 20%).
+        - Test mixing: Occasionally include skipped creators to detect patterns (e.g., 10% chance to include a skipped creator).
+    - **Category Mixing**:
+        - Mix selected category (from onboarding) with related and random categories (e.g., 70% selected, 20% related, 10% random).
+    - **Virality and Predictive Engagement**:
+        - `virality_score`: Computed from TikTok metrics (`views`, `likes`, `comments`).
+        - `predictive_engagement`: From tagging script (`educational_value`, `attention_grabbing`, `entertainment_value`).
+        - Weights: Test separately (e.g., `virality (30%)`, `predictive_engagement (20%)`).
+    - **Skip Patterns**:
+        - Track skips by `style`, `creator_username`, and `category`.
+        - Index on skips: Reduce weight of skipped `style`/`creator`/`category` (e.g., by 15% per skip).
+        - Mix in variety: Include skipped `style`/`creator`/`category` at a low rate (e.g., 10%) to test if skips are consistent.
+- **Requirements**:
+    - Backend logic to fetch videos based on weighted variables.
+    - **In-App Admin Tab**: Dynamic interface to adjust weights (e.g., sliders for style: `animated_voiceover (40%)`, category mix: `selected (70%)`, `virality (30%)`, `skip_penalty (15%)`virality mix, etc.
+    - Log interactions (`user_interactions` table: `user_id`, `video_id`, `watch_time`, `duration`).
+
+### 2.4 Pattern Identification Tools
+
+- **Description**: Tools to identify content patterns during testing.
+- **Requirements**:
+    - **Patterns Tab**: Summary of patterns (e.g., “Top Styles: Animated Voiceover (30%)”, “Top Creators: MinuteEarth (15%)”, “Most Skipped Categories: Math (20%)”).
+
+---
+
+## 3. Technical Requirements
+
+- **Database Updates**:
+    - Add `style` column to `videos` table (`text`, nullable).
+- **Frontend**:
+    - Mobile app with three tabs: Feed, Admin (weights), Patterns.
+    - Video player with autoplay and controls.
+- **Backend**:
+    - API to fetch videos based on algorithm (Node.js/Flask(?) with Supabase).
+    - Dynamic weight adjustments via Admin tab.
+
+---
+
+## 4. Success Metrics
+
+- **Engagement**:
+    - Average watch time per video.
+    - Skip rate vs. full watch rate.
+- **Recommendation Effectiveness**:
+    - Session length (average time in feed).
+    - Impact of variables (e.g., does mixing styles reduce skips?).
+- **Tagging Accuracy**:
+    - Internal feedback on tagging relevance (via metadata modal).
+- **Pattern Identification**:
+    - Insights from Patterns tab (e.g., top styles, creators, skip patterns).

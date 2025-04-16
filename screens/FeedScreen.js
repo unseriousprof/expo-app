@@ -1,54 +1,80 @@
 // screens/FeedScreen.js
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { View, FlatList, Text, StyleSheet, Dimensions, ActivityIndicator, Alert, TouchableOpacity, Pressable } from 'react-native';
-import { Video, ResizeMode } from 'expo-av';
+import { View, FlatList, Text, StyleSheet, Dimensions, ActivityIndicator, Alert, TouchableOpacity, Pressable, Modal, ScrollView } from 'react-native';
+// import { Video, ResizeMode } from 'expo-av'; // Deprecated
+import { VideoView, useVideoPlayer } from 'expo-video'; // Correct import for expo-video
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { StatusBar } from 'expo-status-bar';
 import { Ionicons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context'; // Import hook
 import { supabase } from '../supabase';
+import { Colors } from '../constants/Colors';
+import { useColorScheme } from '../hooks/useColorScheme';
 
 const { height: SCREEN_HEIGHT, width: SCREEN_WIDTH } = Dimensions.get('window');
 
 // --- VideoItem Component --- 
-const VideoItem = React.memo(({ item, isActive }) => {
-    const [isPaused, setIsPaused] = useState(false);
-    const videoRef = useRef(null); // Ref to control video playback directly if needed
+const VideoItem = React.memo(({ item, isActive, onShowMetadata }) => {
+    const [isManuallyPaused, setIsManuallyPaused] = useState(false);
+    const insets = useSafeAreaInsets(); // Get safe area insets for this item
+    
+    // Create player using the hook
+    const player = useVideoPlayer({ uri: item.video_file }, playerInstance => {
+      playerInstance.loop = true;
+      // Don't auto-play here, let the effect handle it based on isActive
+    });
 
     const handlePress = () => {
-        setIsPaused(prevState => !prevState);
+        setIsManuallyPaused(prevState => {
+            const newState = !prevState;
+            if (newState) {
+                player.pause(); // Manually pause
+            } else {
+                if (isActive) { // Only play if the item is active
+                   player.play(); 
+                }
+            }
+            return newState;
+        });
     };
 
-    // Effect to pause video if it becomes inactive
+    // Effect to control playback based on isActive and manual pause state
     useEffect(() => {
-        if (!isActive) {
-            setIsPaused(true); // Pause when not visible
+        if (isActive && !isManuallyPaused) {
+            player.play();
+        } else {
+            player.pause();
         }
-        // Optional: could also reset pause state when becoming active
-        // else { 
-        //    setIsPaused(false);
-        // }
-    }, [isActive]);
+    }, [isActive, isManuallyPaused, player]);
+
+    // Cleanup the player when the component unmounts
+    useEffect(() => {
+        return () => {
+            player.release();
+        };
+    }, [player]);
 
     return (
         <Pressable onPress={handlePress} style={styles.videoContainer}>
-            <Video
-                ref={videoRef}
-                source={{ uri: item.video_file }}
+            {/* Replace Video with VideoView */}
+            <VideoView
+                player={player}
                 style={styles.video}
-                // Use ResizeMode object
-                resizeMode={ResizeMode.COVER} 
-                isLooping
-                // Play only if active and not manually paused
-                shouldPlay={isActive && !isPaused} 
+                contentFit='cover'
+                nativeControls={false} // Disable native controls
             />
-            {isPaused && (
+            {isManuallyPaused && (
                 <View style={styles.pauseIconContainer}>
                     <Ionicons name="play" size={80} color="rgba(255, 255, 255, 0.7)" />
                 </View>
             )}
-            <View style={styles.textOverlayContainer}> 
+            <View style={[styles.textOverlayContainer, { bottom: insets.bottom + 20, left: insets.left + 10, right: insets.right + 10 }]}> 
                 <Text style={styles.title}>{item.title}</Text>
                 <Text style={styles.creator}>By {item.creator_username}</Text>
+                <TouchableOpacity style={styles.metadataButton} onPress={() => onShowMetadata(item)}>
+                    <Ionicons name="information-circle-outline" size={28} color="#fff" />
+                    <Text style={styles.metadataButtonText}>View Metadata</Text>
+                </TouchableOpacity>
             </View>
         </Pressable>
     );
@@ -63,14 +89,18 @@ export default function FeedScreen({ navigation }) {
     const [error, setError] = useState(null);
     const [viewableItemId, setViewableItemId] = useState(null);
     const [allLoaded, setAllLoaded] = useState(false);
+    const [metadataModalVisible, setMetadataModalVisible] = useState(false);
+    const [metadataVideo, setMetadataVideo] = useState(null);
 
     const viewabilityConfig = useRef({ viewAreaCoveragePercentThreshold: 50 }).current;
-    const BATCH_SIZE = 5;
+    const BATCH_SIZE = 15;
+    const onEndReachedCalledDuringMomentum = useRef(true); // Ref to help debounce onEndReached
+    const insets = useSafeAreaInsets(); // Get safe area insets for the screen
+    const colorScheme = useColorScheme();
+    const theme = Colors[colorScheme || 'light'];
 
     const fetchVideos = async (initialLoad = false) => {
-        console.log(`fetchVideos called: initialLoad=${initialLoad}, loadingMore=${loadingMore}, allLoaded=${allLoaded}`); // Log entry
         if (!initialLoad && (loadingMore || allLoaded)) {
-            console.log('fetchVideos: Skipping fetch (already loading or all loaded)');
             return;
         }
 
@@ -83,90 +113,78 @@ export default function FeedScreen({ navigation }) {
         }
 
         try {
-            console.log('fetchVideos: Getting USER_ID and USER_CATEGORIES from AsyncStorage');
             const userId = await AsyncStorage.getItem('USER_ID');
             const cats = await AsyncStorage.getItem('USER_CATEGORIES');
-            console.log(`fetchVideos: AsyncStorage results - userId=${userId}, cats=${cats}`);
             if (!userId) throw new Error('User ID not found in AsyncStorage');
 
             const userCategories = cats ? JSON.parse(cats) : [];
             if (initialLoad) {
                 setSelectedCategories(userCategories);
-                console.log('fetchVideos: User categories set:', userCategories);
             }
+            console.log('USER_CATEGORIES:', userCategories);
 
-            const loadedVideoIds = videos.map(v => v.id);
-            console.log('fetchVideos: Fetching from Supabase, excluding IDs:', loadedVideoIds);
-
-            let query = supabase
+            // Step 1: Fetch videos (no join)
+            const offset = videos.length;
+            console.log('Requesting videos with offset:', offset, 'range:', offset, '-', offset + BATCH_SIZE - 1);
+            let { data: videoBatch, error: videoError } = await supabase
                 .from('videos')
-                .select(`
-                    *,
-                    transcripts:fk_transcripts_video_id (*)
-                `)
+                .select('*')
                 .eq('upload_status', 'done')
                 .eq('transcribe_status', 'done')
-                .eq('tag_status', 'done');
-
-            if (!initialLoad && loadedVideoIds.length > 0) {
-                query = query.not('id', 'in', `(${loadedVideoIds.join(',')})`);
+                .eq('tag_status', 'done')
+                .order('virality_score', { ascending: false })
+                .range(offset, offset + BATCH_SIZE - 1);
+            if (videoError) throw videoError;
+            if (!videoBatch || videoBatch.length === 0) {
+                setAllLoaded(true);
+                return;
             }
+            console.log('Returned video IDs:', videoBatch.map(v => v.id));
 
-            query = query.order('virality_score', { ascending: false }).limit(BATCH_SIZE);
+            // Step 2: Fetch transcripts for those video IDs
+            const videoIds = videoBatch.map(v => v.id);
+            let { data: transcriptBatch, error: transcriptError } = await supabase
+                .from('transcripts')
+                .select('*')
+                .in('video_id', videoIds);
+            if (transcriptError) throw transcriptError;
+            console.log('Fetched transcripts:', transcriptBatch.length);
 
-            const { data, error: fetchError } = await query;
-
-            if (fetchError) {
-                console.error('fetchVideos: Supabase fetch error:', fetchError);
-                throw fetchError;
+            // Step 3: Merge transcripts into videos
+            const transcriptMap = {};
+            for (const t of transcriptBatch) {
+                if (!transcriptMap[t.video_id]) transcriptMap[t.video_id] = [];
+                transcriptMap[t.video_id].push(t);
             }
-            
-            console.log(`fetchVideos: Fetched ${initialLoad ? 'initial' : 'more'} videos (raw count):`, data?.length || 0);
-            // console.log('fetchVideos: Raw data sample:', data?.slice(0, 2)); // Optional: Log first few raw items
-
-            const filteredNewVideos = (data || []).filter(video => {
-                const transcriptData = video.transcripts && Array.isArray(video.transcripts) && video.transcripts.length > 0
-                    ? video.transcripts[0]
-                    : null;
-                if (!transcriptData || !transcriptData.onboarding_categories) return false;
-                const videoCategories = transcriptData.onboarding_categories;
-                return videoCategories.some(cat =>
-                    userCategories.includes(cat.category) && cat.confidence > 0.7
-                );
+            // Filter: Only include videos where at least one onboarding_category matches user selection
+            const filteredBatch = videoBatch.filter(v => {
+                const transcripts = transcriptMap[v.id] || [];
+                // Check all transcripts for onboarding_categories
+                for (const t of transcripts) {
+                    if (Array.isArray(t.onboarding_categories)) {
+                        for (const cat of t.onboarding_categories) {
+                            if (userCategories.includes(cat.category)) {
+                                return true;
+                            }
+                        }
+                    }
+                }
+                return false;
             });
+            const mergedBatch = filteredBatch.map(v => ({ ...v, transcripts: transcriptMap[v.id] || [] }));
 
-            console.log('fetchVideos: Filtered new videos count:', filteredNewVideos.length);
-
-            if (filteredNewVideos.length === 0 && data?.length === 0) {
-                console.log('fetchVideos: Setting allLoaded = true (no data from Supabase)');
-                setAllLoaded(true);
-            } else {
-                setVideos(prevVideos => {
-                    const newVideos = initialLoad ? filteredNewVideos : [...prevVideos, ...filteredNewVideos];
-                    console.log(`fetchVideos: Updating videos state. Total count: ${newVideos.length}`);
-                    return newVideos;
-                });
-            }
-            
-            if (initialLoad && filteredNewVideos.length === 0 && !allLoaded) {
-                console.log('fetchVideos: Setting error - No videos found matching interests (initial load)');
-                setError('No videos found matching your interests. Try selecting different categories.');
-            }
-            if (data && data.length < BATCH_SIZE) {
-                console.log('fetchVideos: Setting allLoaded = true (fetched less than BATCH_SIZE)');
+            // Accumulate videos for infinite scroll
+            setVideos(prev => initialLoad ? mergedBatch : [...prev, ...mergedBatch]);
+            if (videoBatch.length < BATCH_SIZE) {
                 setAllLoaded(true);
             }
-
         } catch (err) {
             console.error('fetchVideos: Error caught:', err);
             setError(err.message || 'Failed to load videos');
         } finally {
-            console.log('fetchVideos: Finally block running');
             if (initialLoad) {
-                console.log('fetchVideos: Setting loading = false');
                 setLoading(false);
             } else {
-                console.log('fetchVideos: Setting loadingMore = false');
                 setLoadingMore(false);
             }
         }
@@ -185,11 +203,22 @@ export default function FeedScreen({ navigation }) {
         }
     }, []);
 
+    const handleShowMetadata = (video) => {
+        setMetadataVideo(video);
+        setMetadataModalVisible(true);
+    };
+
+    const handleCloseMetadata = () => {
+        setMetadataModalVisible(false);
+        setMetadataVideo(null);
+    };
+
     // Use VideoItem in renderItem
     const renderVideoItem = useCallback(({ item }) => (
         <VideoItem 
             item={item} 
             isActive={item.id === viewableItemId} 
+            onShowMetadata={handleShowMetadata}
         />
     ), [viewableItemId]);
 
@@ -225,7 +254,7 @@ export default function FeedScreen({ navigation }) {
         );
     }
 
-    if (videos.length === 0) {
+    if (videos.length === 0 && !loading) { // Check loading state too
         return (
             <View style={styles.emptyContainer}>
                 <Text style={styles.emptyText}>No videos found matching your interests.</Text>
@@ -241,14 +270,59 @@ export default function FeedScreen({ navigation }) {
     }
 
     return (
-        <View style={{ flex: 1, backgroundColor: '#000' }}>
+        <View style={{ flex: 1, backgroundColor: theme.background }}>
+            {/* SolarPunk gradient background */}
+            <View style={{
+                ...StyleSheet.absoluteFillObject,
+                zIndex: -1,
+                backgroundColor: theme.background,
+            }}>
+                {/* Gradient layer */}
+                <View style={{
+                    flex: 1,
+                    backgroundColor: 'transparent',
+                    borderBottomLeftRadius: 80,
+                    borderBottomRightRadius: 80,
+                    overflow: 'hidden',
+                }}>
+                    <View style={{
+                        flex: 1,
+                        backgroundColor: 'transparent',
+                        position: 'absolute',
+                        width: '100%',
+                        height: '100%',
+                    }}>
+                        {/* Simulated gradient using two overlapping views */}
+                        <View style={{
+                            position: 'absolute',
+                            width: '100%',
+                            height: '60%',
+                            backgroundColor: theme.gradientStart,
+                            opacity: 0.7,
+                            borderBottomLeftRadius: 80,
+                            borderBottomRightRadius: 80,
+                        }} />
+                        <View style={{
+                            position: 'absolute',
+                            width: '100%',
+                            height: '100%',
+                            backgroundColor: theme.gradientEnd,
+                            opacity: 0.25,
+                        }} />
+                    </View>
+                </View>
+            </View>
             <StatusBar hidden />
-            {/* Back Button */}
+            {/* Adjust Back Button position using insets */}
             <TouchableOpacity 
-                style={styles.backButton}
+                style={[styles.backButton, {
+                    top: insets.top + 10, left: insets.left + 15,
+                    backgroundColor: theme.overlay,
+                    shadowColor: theme.shadow,
+                }]} // Apply insets and theme
                 onPress={() => navigation.replace('Onboarding')} // Navigate back to Onboarding
             >
-                <Ionicons name="arrow-back" size={28} color="white" />
+                <Ionicons name="arrow-back" size={28} color={theme.icon} />
             </TouchableOpacity>
             <FlatList
                 data={videos}
@@ -260,13 +334,73 @@ export default function FeedScreen({ navigation }) {
                 showsVerticalScrollIndicator={false}
                 onViewableItemsChanged={onViewableItemsChanged}
                 viewabilityConfig={viewabilityConfig}
-                initialNumToRender={3}
-                windowSize={5}
-                maxToRenderPerBatch={3}
-                onEndReached={() => fetchVideos(false)}
-                onEndReachedThreshold={0.5}
-                ListFooterComponent={loadingMore ? <ActivityIndicator style={{ marginVertical: 20 }} size="large" color="#ccc" /> : null}
+                initialNumToRender={5} // Increased
+                windowSize={10} // Increased
+                maxToRenderPerBatch={5} // Increased
+                onEndReached={() => {
+                    if (!onEndReachedCalledDuringMomentum.current && !loadingMore) {
+                        fetchVideos(false);
+                        onEndReachedCalledDuringMomentum.current = true; 
+                    }
+                }}
+                onEndReachedThreshold={0.8}
+                onMomentumScrollBegin={() => { onEndReachedCalledDuringMomentum.current = false; }} 
+                ListFooterComponent={loadingMore ? <ActivityIndicator style={{ marginVertical: 20 }} size="large" color={theme.accent4} /> : null}
             />
+            {/* Metadata Modal */}
+            <Modal
+                visible={metadataModalVisible}
+                animationType="slide"
+                transparent={true}
+                onRequestClose={handleCloseMetadata}
+            >
+                <View style={[styles.modalOverlay, { backgroundColor: theme.overlay }]}> {/* Glassy overlay */}
+                    <View style={[styles.modalContainer, {
+                        backgroundColor: theme.surface,
+                        borderColor: theme.border,
+                        shadowColor: theme.shadow,
+                        borderWidth: 2,
+                        // Neon glow effect
+                        shadowOpacity: 0.7,
+                        shadowRadius: 24,
+                        elevation: 16,
+                    }]}
+                    >
+                        <ScrollView contentContainerStyle={styles.modalScrollContent}>
+                            <Text style={[styles.modalTitle, { color: theme.icon }]}>Video Metadata</Text>
+                            {metadataVideo && (
+                                <>
+                                    <Text style={[styles.modalSectionTitle, { color: theme.accent2 }]}>General</Text>
+                                    <Text style={styles.modalLabel}>TikTok ID: <Text style={styles.modalValue}>{metadataVideo.tiktok_id}</Text></Text>
+                                    <Text style={styles.modalLabel}>Upload Date: <Text style={styles.modalValue}>{metadataVideo.upload_date}</Text></Text>
+                                    <Text style={styles.modalLabel}>Views: <Text style={styles.modalValue}>{metadataVideo.views}</Text></Text>
+                                    <Text style={styles.modalLabel}>Likes: <Text style={styles.modalValue}>{metadataVideo.likes}</Text></Text>
+                                    <Text style={styles.modalLabel}>Comments: <Text style={styles.modalValue}>{metadataVideo.comments}</Text></Text>
+                                    <Text style={styles.modalLabel}>Duration: <Text style={styles.modalValue}>{metadataVideo.duration}s</Text></Text>
+                                    <Text style={styles.modalLabel}>Resolution: <Text style={styles.modalValue}>{metadataVideo.resolution}</Text></Text>
+                                    <Text style={styles.modalLabel}>Language: <Text style={styles.modalValue}>{metadataVideo.language}</Text></Text>
+                                    <Text style={styles.modalLabel}>Description: <Text style={styles.modalValue}>{metadataVideo.transcripts?.[0]?.description || ''}</Text></Text>
+                                    <Text style={[styles.modalSectionTitle, { color: theme.accent4 }]}>Tagging Output</Text>
+                                    <Text style={styles.modalLabel}>Categories: {Array.isArray(metadataVideo.transcripts?.[0]?.categories) ? metadataVideo.transcripts[0].categories.map((c, i) => <Text key={i} style={styles.modalValue}>{c.tag}{i < metadataVideo.transcripts[0].categories.length - 1 ? ', ' : ''}</Text>) : <Text style={styles.modalValue}>N/A</Text>}</Text>
+                                    <Text style={styles.modalLabel}>Topics: {Array.isArray(metadataVideo.transcripts?.[0]?.topics) ? metadataVideo.transcripts[0].topics.map((t, i) => <Text key={i} style={styles.modalValue}>{t.topic}{i < metadataVideo.transcripts[0].topics.length - 1 ? ', ' : ''}</Text>) : <Text style={styles.modalValue}>N/A</Text>}</Text>
+                                    <Text style={styles.modalLabel}>Difficulty Level: <Text style={styles.modalValue}>{metadataVideo.transcripts?.[0]?.difficulty_level?.level || ''}</Text></Text>
+                                    <Text style={styles.modalLabel}>Predictive Engagement:</Text>
+                                    <View style={styles.modalSubSection}>
+                                        <Text style={styles.modalLabel}>Educational Value: <Text style={styles.modalValue}>{metadataVideo.transcripts?.[0]?.predictive_engagement?.educational_value ?? ''}</Text></Text>
+                                        <Text style={styles.modalLabel}>Attention Grabbing: <Text style={styles.modalValue}>{metadataVideo.transcripts?.[0]?.predictive_engagement?.attention_grabbing ?? ''}</Text></Text>
+                                        <Text style={styles.modalLabel}>Entertainment Value: <Text style={styles.modalValue}>{metadataVideo.transcripts?.[0]?.predictive_engagement?.entertainment_value ?? ''}</Text></Text>
+                                    </View>
+                                    <Text style={styles.modalLabel}>Content Flags: {Array.isArray(metadataVideo.transcripts?.[0]?.content_flags) ? metadataVideo.transcripts[0].content_flags.map((c, i) => <Text key={i} style={styles.modalValue}>{c}{i < metadataVideo.transcripts[0].content_flags.length - 1 ? ', ' : ''}</Text>) : <Text style={styles.modalValue}>N/A</Text>}</Text>
+                                </>
+                            )}
+                            <TouchableOpacity style={[styles.modalCloseButton, { backgroundColor: theme.accent3 }]} onPress={handleCloseMetadata}>
+                                <Ionicons name="close-circle" size={32} color={theme.accent4} />
+                                <Text style={[styles.modalCloseButtonText, { color: theme.icon }]}>Close</Text>
+                            </TouchableOpacity>
+                        </ScrollView>
+                    </View>
+                </View>
+            </Modal>
         </View>
     );
 }
@@ -325,30 +459,22 @@ const styles = StyleSheet.create({
         height: SCREEN_HEIGHT,
     },
     title: {
-        position: 'absolute',
-        bottom: 60,
-        left: 10,
-        right: 10,
         color: '#fff',
         fontSize: 18,
+        fontWeight: '600',
         textAlign: 'left',
-        paddingHorizontal: 10,
-        textShadowColor: 'rgba(0, 0, 0, 0.75)',
-        textShadowOffset: { width: -1, height: 1 },
-        textShadowRadius: 10
+        textShadowColor: 'rgba(0, 0, 0, 0.9)',
+        textShadowOffset: { width: 1, height: 1 },
+        textShadowRadius: 2,
+        marginBottom: 4,
     },
     creator: {
-        position: 'absolute',
-        bottom: 40,
-        left: 10,
-        right: 10,
         color: '#ccc',
         fontSize: 14,
         textAlign: 'left',
-        paddingHorizontal: 10,
-        textShadowColor: 'rgba(0, 0, 0, 0.75)',
-        textShadowOffset: { width: -1, height: 1 },
-        textShadowRadius: 10
+        textShadowColor: 'rgba(0, 0, 0, 0.9)',
+        textShadowOffset: { width: 1, height: 1 },
+        textShadowRadius: 2,
     },
     resetButton: {
         marginTop: 20,
@@ -372,22 +498,103 @@ const styles = StyleSheet.create({
         alignItems: 'center',
         backgroundColor: 'rgba(0, 0, 0, 0.2)', // Slight dimming when paused
     },
-    textOverlayContainer: { // New style for text overlay area
+    textOverlayContainer: { 
         position: 'absolute',
-        bottom: 20, // Adjust positioning as needed
-        left: 10,
-        right: 10, 
-        backgroundColor: 'rgba(0, 0, 0, 0.3)', // Optional background for readability
-        padding: 8,
-        borderRadius: 5,
+        backgroundColor: 'rgba(0, 0, 0, 0.4)',
+        paddingVertical: 10,
+        paddingHorizontal: 15,
+        borderRadius: 8,
     },
-    backButton: { // Style for the back button
+    backButton: { 
         position: 'absolute',
-        top: 40, // Adjust as needed for status bar height / safe area
-        left: 15,
-        zIndex: 10, // Ensure it's above other elements
-        padding: 5, // Add padding for easier tapping
-        backgroundColor: 'rgba(0, 0, 0, 0.3)', // Optional background for visibility
-        borderRadius: 15, // Make it roundish
+        zIndex: 10, 
+        padding: 8,
+        backgroundColor: 'rgba(0, 0, 0, 0.4)',
+        borderRadius: 20,
+    },
+    metadataButton: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        backgroundColor: 'rgba(110, 231, 183, 0.85)', // SolarPunk mint green
+        borderRadius: 20,
+        paddingVertical: 6,
+        paddingHorizontal: 14,
+        alignSelf: 'flex-end',
+        marginTop: 8,
+        shadowColor: '#6ee7b7',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.3,
+        shadowRadius: 4,
+    },
+    metadataButtonText: {
+        color: '#fff',
+        fontWeight: 'bold',
+        marginLeft: 6,
+        fontSize: 16,
+    },
+    modalOverlay: {
+        flex: 1,
+        backgroundColor: 'rgba(34, 197, 94, 0.18)', // SolarPunk green overlay
+        justifyContent: 'center',
+        alignItems: 'center',
+    },
+    modalContainer: {
+        width: '90%',
+        maxHeight: '85%',
+        backgroundColor: '#f0fdf4', // SolarPunk light mint
+        borderRadius: 24,
+        padding: 20,
+        shadowColor: '#6ee7b7',
+        shadowOffset: { width: 0, height: 8 },
+        shadowOpacity: 0.25,
+        shadowRadius: 16,
+        elevation: 8,
+    },
+    modalScrollContent: {
+        paddingBottom: 30,
+    },
+    modalTitle: {
+        fontSize: 22,
+        fontWeight: 'bold',
+        color: '#059669', // SolarPunk deep green
+        marginBottom: 10,
+        textAlign: 'center',
+    },
+    modalSectionTitle: {
+        fontSize: 18,
+        fontWeight: 'bold',
+        color: '#10b981',
+        marginTop: 16,
+        marginBottom: 4,
+    },
+    modalLabel: {
+        fontSize: 15,
+        color: '#047857',
+        marginTop: 6,
+        fontWeight: '600',
+    },
+    modalValue: {
+        color: '#334155',
+        fontWeight: '400',
+    },
+    modalSubSection: {
+        marginLeft: 12,
+        marginBottom: 6,
+    },
+    modalCloseButton: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        alignSelf: 'center',
+        marginTop: 18,
+        backgroundColor: '#d1fae5',
+        borderRadius: 16,
+        paddingVertical: 8,
+        paddingHorizontal: 18,
+    },
+    modalCloseButtonText: {
+        color: '#059669',
+        fontWeight: 'bold',
+        fontSize: 16,
+        marginLeft: 8,
     },
 });
